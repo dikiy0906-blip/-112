@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мини-Платформер</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        /* Стили для ретро-вида */
+        :root {
+            --game-width: 800px;
+            --game-height: 400px;
+            --sky-color: #64b5f6; /* Светло-голубой */
+            --ground-color: #4caf50; /* Травянисто-зеленый */
+            --platform-color: #795548; /* Коричневый */
+            --player-color: #e53935; /* Красный */
+            --enemy-color: #5d4037; /* Темно-коричневый (как Гумба) */
+        }
+
+        body {
+            background-color: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            font-family: 'Press Start 2P', cursive;
+            flex-direction: column;
+        }
+
+        #game-container {
+            width: 100%;
+            max-width: var(--game-width);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+            border: 4px solid #333;
+            border-radius: 8px;
+            overflow: hidden; /* Важно для скрытия прокручиваемых элементов */
+            touch-action: manipulation; /* Для лучшей поддержки мобильных устройств */
+        }
+
+        #game-canvas {
+            display: block;
+            background-color: var(--sky-color);
+            width: 100%;
+            height: auto;
+            aspect-ratio: 2 / 1; /* Сохранение соотношения 800x400 */
+        }
+
+        #controls {
+            display: none; /* Скрываем на десктопе */
+            margin-top: 15px;
+            width: 100%;
+            max-width: 300px;
+            justify-content: space-around;
+        }
+
+        .control-button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: 3px solid #388E3C;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            box-shadow: 0 4px 0 #388E3C;
+            transition: transform 0.1s, box-shadow 0.1s;
+        }
+
+        .control-button:active {
+            transform: translateY(4px);
+            box-shadow: 0 0px 0 #388E3C;
+        }
+
+        /* Показываем кнопки управления на мобильных устройствах */
+        @media (max-width: 640px) {
+            #controls {
+                display: flex;
+            }
+            body {
+                padding: 10px;
+            }
+        }
+
+        #message-box {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: #fff;
+            border: 5px solid #000;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            z-index: 1000;
+            display: none;
+            font-size: 14px;
+        }
+
+        #message-box-content {
+            margin-bottom: 15px;
+            color: #333;
+        }
+        
+        #restart-button {
+            background-color: #ff9800;
+            border-color: #f57c00;
+        }
+    </style>
+</head>
+<body class="bg-gray-800 text-white">
+
+    <div class="text-center mb-4 p-2">
+        <h1 class="text-xl sm:text-2xl font-bold uppercase tracking-wider">Мини-Платформер</h1>
+        <p class="text-xs sm:text-sm mt-1 text-yellow-400">Используйте ← и → для движения, ↑ или Пробел для прыжка.</p>
+    </div>
+
+    <div id="game-container" class="bg-white">
+        <canvas id="game-canvas"></canvas>
+    </div>
+
+    <div id="controls">
+        <button id="left-btn" class="control-button bg-blue-500 border-blue-700 active:shadow-none active:translate-y-1">←</button>
+        <button id="jump-btn" class="control-button bg-red-500 border-red-700 active:shadow-none active:translate-y-1">↑ Прыжок</button>
+        <button id="right-btn" class="control-button bg-blue-500 border-blue-700 active:shadow-none active:translate-y-1">→</button>
+    </div>
+
+    <div id="message-box" role="dialog" aria-modal="true" aria-labelledby="message-box-content">
+        <p id="message-box-content"></p>
+        <button id="restart-button" class="control-button">Начать заново</button>
+    </div>
+
+    <script>
+        // Глобальные переменные для Canvas и контекста
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Константы игры
+        const GRAVITY = 0.6;
+        const JUMP_VELOCITY = -12;
+        const RUN_SPEED = 5;
+        const ENEMY_SPEED = 1.5;
+        const SCROLL_THRESHOLD = canvas.width / 2 - 100; // Точка, после которой мир начинает двигаться
+
+        let gameWidth = canvas.clientWidth;
+        let gameHeight = canvas.clientHeight;
+
+        // Состояние игры
+        let keys = {};
+        let gameState = 'playing'; // 'playing', 'win', 'lose'
+
+        // Объект игрока
+        class Player {
+            constructor() {
+                this.width = 20;
+                this.height = 30;
+                this.x = 50;
+                this.y = gameHeight - this.height - 30; // Начальная позиция над первой платформой
+                this.dx = 0; // Скорость по X
+                this.dy = 0; // Скорость по Y (гравитация/прыжок)
+                this.onGround = false;
+                this.color = 'var(--player-color)';
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+
+            update() {
+                // Применение гравитации
+                this.dy += GRAVITY;
+                this.y += this.dy;
+
+                // Горизонтальное движение
+                if (keys['ArrowLeft']) {
+                    this.dx = -RUN_SPEED;
+                } else if (keys['ArrowRight']) {
+                    this.dx = RUN_SPEED;
+                } else {
+                    this.dx = 0;
+                }
+
+                // Обновление позиции X (только если не прокручиваем мир)
+                if (this.x < SCROLL_THRESHOLD || this.dx < 0) {
+                    this.x += this.dx;
+                } else if (this.dx > 0) {
+                    // Если игрок достигает порога прокрутки и движется вправо,
+                    // мир прокручивается, а не игрок
+                    scrollX -= this.dx;
+                }
+                
+                // Ограничение игрока по левому краю
+                if (this.x < 0) {
+                    this.x = 0;
+                }
+
+                // Проверка падения за пределы экрана (проигрыш)
+                if (this.y > gameHeight + 100) {
+                    gameState = 'lose';
+                    showMessageBox('Игра окончена! Вы упали.', resetGame);
+                }
+            }
+
+            jump() {
+                if (this.onGround) {
+                    this.dy = JUMP_VELOCITY;
+                    this.onGround = false;
+                }
+            }
+        }
+
+        // Объект врага
+        class Enemy {
+            constructor(x, y, patrolStart, patrolEnd) {
+                this.width = 20;
+                this.height = 20;
+                this.x = x; // Мировые координаты
+                this.y = y;
+                this.speed = ENEMY_SPEED;
+                this.direction = 1; // 1 = вправо, -1 = влево
+                this.color = 'var(--enemy-color)';
+                this.patrolStart = patrolStart; // Мировая X-координата начала патрулирования
+                this.patrolEnd = patrolEnd; // Мировая X-координата конца патрулирования
+            }
+
+            draw() {
+                // Отрисовка с учетом прокрутки
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x + scrollX, this.y, this.width, this.height);
+            }
+
+            update() {
+                // Горизонтальное движение
+                this.x += this.speed * this.direction;
+
+                // Проверка границ патрулирования
+                if (this.x <= this.patrolStart) {
+                    this.direction = 1; // Двигаться вправо
+                } else if (this.x + this.width >= this.patrolEnd) {
+                    this.direction = -1; // Двигаться влево
+                }
+            }
+        }
+
+        // Объект платформы
+        class Platform {
+            constructor(x, y, width, height, isGoal = false) {
+                this.x = x; // Мировые координаты
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.color = isGoal ? '#ffeb3b' : '#795548';
+                this.isGoal = isGoal;
+            }
+
+            draw() {
+                // Отрисовка с учетом прокрутки
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x + scrollX, this.y, this.width, this.height);
+            }
+        }
+
+        let player;
+        let platforms = [];
+        let enemies = []; // Массив врагов
+        let scrollX = 0; // Смещение мира по X для прокрутки
+
+        // Инициализация игры
+        function initGame() {
+            // Установка текущих размеров Canvas (для корректной работы responsive design)
+            gameWidth = canvas.clientWidth;
+            gameHeight = canvas.clientHeight;
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+            
+            // Сброс состояния
+            gameState = 'playing';
+            keys = {};
+            scrollX = 0;
+            
+            // Создание игрока
+            player = new Player();
+
+            // Создание платформ
+            // Формат: x, y, width, height, isGoal
+            platforms = [
+                // Начальная платформа (земля)
+                new Platform(0, gameHeight - 30, 1000, 30),
+                
+                // Платформы для прыжков
+                new Platform(250, gameHeight - 100, 150, 20),
+                new Platform(500, gameHeight - 180, 100, 20),
+                new Platform(700, gameHeight - 200, 50, 20),
+                
+                // Длинный пролет
+                new Platform(1200, gameHeight - 30, 500, 30),
+                
+                // Лестница
+                new Platform(1800, gameHeight - 80, 50, 20),
+                new Platform(1900, gameHeight - 150, 50, 20),
+                new Platform(2000, gameHeight - 220, 50, 20),
+
+                // Цель (золотая платформа)
+                new Platform(2300, gameHeight - 270, 80, 20, true)
+            ];
+
+            // Создание врагов (Ботов)
+            // Размещение врагов на платформах: y = Platform.y - Enemy.height
+            // Враг на начальной платформе (мировые координаты)
+            enemies = [
+                new Enemy(400, gameHeight - 30 - 20, 350, 600),
+                
+                // Враг на длинной платформе
+                new Enemy(1400, gameHeight - 30 - 20, 1300, 1600),
+            ];
+
+            hideMessageBox();
+            gameLoop();
+        }
+
+        // Обработка столкновений
+        function checkCollision() {
+            player.onGround = false; // Сброс состояния "на земле"
+
+            // 1. Столкновение игрока с платформами
+            platforms.forEach(p => {
+                // Расчет абсолютных координат платформы (с учетом прокрутки)
+                const pAbsX = p.x + scrollX;
+                
+                // Проверка пересечения по X
+                if (player.x < pAbsX + p.width && player.x + player.width > pAbsX) {
+                    // Проверка пересечения по Y
+                    if (player.y + player.height > p.y && player.y < p.y + p.height) {
+
+                        // 1.1. Столкновение сверху (приземление)
+                        if (player.y + player.height - player.dy <= p.y) {
+                            player.y = p.y - player.height; // Установка на платформу
+                            player.dy = 0;
+                            player.onGround = true;
+                            
+                            if (p.isGoal) {
+                                gameState = 'win';
+                                showMessageBox('Победа! Вы достигли Золотой Платформы!', resetGame);
+                            }
+                        } 
+                        // 1.2. Столкновение снизу (удар головой)
+                        else if (player.y - player.dy >= p.y + p.height) {
+                            player.y = p.y + p.height; // Отскок
+                            player.dy = 0;
+                        } 
+                        // 1.3. Столкновение сбоку
+                        else {
+                            // Если игрок движется вправо
+                            if (player.dx > 0) {
+                                player.x = pAbsX - player.width;
+                            } 
+                            // Если игрок движется влево
+                            else if (player.dx < 0) {
+                                player.x = pAbsX + p.width;
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 2. Столкновение игрока с врагами
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const e = enemies[i];
+                const eAbsX = e.x + scrollX; // Текущая позиция врага на экране
+
+                // Проверка пересечения по X
+                if (player.x < eAbsX + e.width && player.x + player.width > eAbsX) {
+                    // Проверка пересечения по Y
+                    if (player.y + player.height > e.y && player.y < e.y + e.height) {
+                        
+                        // 2.1. Игрок прыгнул сверху на врага (победа)
+                        // Проверяем, был ли низ игрока выше верха врага в предыдущем кадре
+                        if (player.y + player.height - player.dy <= e.y) {
+                            // Игрок победил врага
+                            enemies.splice(i, 1); // Удаляем врага
+                            player.dy = JUMP_VELOCITY / 2; // Небольшой отскок
+                        } 
+                        // 2.2. Столкновение сбоку или снизу (проигрыш)
+                        else {
+                            gameState = 'lose';
+                            showMessageBox('Игра окончена! Враг победил вас.', resetGame);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Главный игровой цикл
+        function gameLoop() {
+            if (gameState !== 'playing') return;
+
+            // 1. Очистка экрана
+            ctx.clearRect(0, 0, gameWidth, gameHeight);
+
+            // 2. Отрисовка земли (фоновый элемент)
+            ctx.fillStyle = '#4caf50';
+            ctx.fillRect(0, gameHeight - 30, gameWidth, 30);
+
+            // 3. Обновление и отрисовка мира (платформы и враги)
+            platforms.forEach(p => p.draw());
+            
+            enemies.forEach(e => {
+                e.update();
+                e.draw();
+            });
+
+            // 4. Обновление и отрисовка игрока
+            player.update();
+            checkCollision();
+            player.draw();
+
+            // 5. Запуск следующего кадра
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Управление ---
+
+        // Обработка клавиатуры
+        document.addEventListener('keydown', (e) => {
+            if (gameState !== 'playing') return;
+            // WASD или Стрелки
+            if (e.key === 'ArrowUp' || e.key === ' ' || e.key === 'w' || e.key === 'W') {
+                e.preventDefault(); // Запрещаем прокрутку страницы пробелом
+                player.jump();
+            }
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                keys['ArrowLeft'] = true;
+            }
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                keys['ArrowRight'] = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                keys['ArrowLeft'] = false;
+            }
+            if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                keys['ArrowRight'] = false;
+            }
+        });
+
+        // Обработка тач-кнопок для мобильных
+        const leftBtn = document.getElementById('left-btn');
+        const rightBtn = document.getElementById('right-btn');
+        const jumpBtn = document.getElementById('jump-btn');
+
+        leftBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['ArrowLeft'] = true; }, { passive: false });
+        leftBtn.addEventListener('touchend', () => { keys['ArrowLeft'] = false; });
+        rightBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['ArrowRight'] = true; }, { passive: false });
+        rightBtn.addEventListener('touchend', () => { keys['ArrowRight'] = false; });
+        jumpBtn.addEventListener('touchstart', (e) => { 
+            e.preventDefault(); 
+            if (gameState === 'playing') player.jump(); 
+        }, { passive: false });
+        
+        // --- Вспомогательные функции UI ---
+
+        const messageBox = document.getElementById('message-box');
+        const messageBoxContent = document.getElementById('message-box-content');
+        const restartButton = document.getElementById('restart-button');
+        
+        // Функция для показа сообщения
+        function showMessageBox(message, onRestart) {
+            messageBoxContent.textContent = message;
+            messageBox.style.display = 'block';
+            
+            // Удаляем старый слушатель и добавляем новый
+            restartButton.onclick = null; 
+            restartButton.onclick = onRestart;
+        }
+
+        // Функция для скрытия сообщения
+        function hideMessageBox() {
+            messageBox.style.display = 'none';
+        }
+
+        // Функция перезапуска
+        function resetGame() {
+            hideMessageBox();
+            initGame();
+        }
+
+        // Обработка изменения размера окна
+        window.addEventListener('resize', () => {
+            // Обновляем размеры, но не пересоздаем все объекты
+            gameWidth = canvas.clientWidth;
+            gameHeight = canvas.clientHeight;
+            canvas.width = gameWidth;
+            canvas.height = gameHeight;
+        });
+
+
+        // Инициализация при загрузке страницы
+        window.onload = function() {
+            initGame();
+        };
+
+    </script>
+</body>
+</html>
